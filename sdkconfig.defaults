@@ -1,3 +1,2 @@
-# LED Configuration
-CONFIG_BLINK_LED_STRIP=y
-CONFIG_BLINK_GPIO=2
+# Onboard plain LED (active high)
+CONFIG_WEBCTRL_LED_GPIO=2

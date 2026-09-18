@@ -151,13 +151,23 @@ curl http://192.168.1.100/api/wifi/scan                  # 扫描 WiFi
 ## 项目结构
 
 ```
-esp32_test/
+esp32webctrl/
 ├── main/
-│   └── blink_example_main.c    # 全部业务：网页 UI + REST API + 硬件驱动
+│   ├── esp32_web_control.c     # 全部业务：网页 UI + REST API + 硬件驱动
+│   ├── CMakeLists.txt
+│   └── Kconfig.projbuild       # 板载 LED 引脚配置
+├── tts/                        # 配套视频的配音脚本（可选）
+│   ├── generate.py             # 逐段合成旁白（需本地 GPT-SoVITS 服务）
+│   ├── merge.py                # 拼接整轨 + 生成 SRT
+│   ├── voiceover.srt           # 字幕成品
+│   └── wav/                    # 音频产物（.gitignore 已排除，可重生成）
 ├── CMakeLists.txt
 ├── sdkconfig                   # ESP-IDF 项目配置
 └── README.md
 ```
+
+> `tts/` 只服务于配套视频，与固件无关，可整目录删除。音频不入库，
+> 由 `generate.py` + `merge.py` 按脚本内文本重新生成。
 
 ## 踩坑记录
 
@@ -195,7 +205,7 @@ IDF 的 `httpd_uri_match_wildcard` **只支持结尾通配符**：源码中先�
 
 blink 示例的 `led_strip` 组件走 RMT 发送 WS2812 协议（数据脚由 `CONFIG_BLINK_GPIO` 指定）。板载如果是普通 LED，协议完全对不上，怎么调都不亮。
 
-✅ 解决方案：普通 LED 直接 `gpio_set_level()` 驱动。
+✅ 解决方案：普通 LED 直接 `gpio_set_level()` 驱动。本项目已彻底移除 `led_strip` 依赖及配套的 `BLINK_*` 配置项，板载 LED 引脚改由 `CONFIG_WEBCTRL_LED_GPIO` 指定。
 
 </details>
 
@@ -205,6 +215,71 @@ blink 示例的 `led_strip` 组件走 RMT 发送 WS2812 协议（数据脚由 `C
 NVS 无凭据时若仍调用 `esp_wifi_connect()`，会向空 SSID 发起重试，白白阻塞配网流程。
 
 ✅ 解决方案：仅当 `saved_ssid[0] != '\0'` 时才发起连接，无凭据直接进入配网模式。
+
+</details>
+
+<details>
+<summary><b>6. WiFi 凭据字段是字节数组，不是指针</b></summary>
+
+`wifi_config_t` 里的 `sta.ssid` / `sta.password` 是**定长字节数组**。用三元表达式直接赋字符串地址会报 `int-conversion`，配合 `-Werror` 直接编译失败。
+
+```c
+// ❌ 编译错误
+wifi_config.sta.ssid = save ? saved_ssid : "";
+
+// ✅ 结构体初始化后用 strlcpy 拷贝
+strlcpy((char *)wifi_config.sta.ssid, saved_ssid, sizeof(wifi_config.sta.ssid));
+```
+
+</details>
+
+<details>
+<summary><b>7. 改 Kconfig 后残留配置项与代码不一致</b></summary>
+
+把工程从 blink 示例改过来时删掉了 `BLINK_*` 配置项，但 `sdkconfig` 里残留的旧值仍会被 `idf.py build` 读到，菜单里显示的与代码实际使用的对不上。本项目已把配置项统一为 `CONFIG_WEBCTRL_LED_GPIO`，并删除了 9 个 `sdkconfig.defaults.esp32*`（内容都只是 blink 残留，且与代码不符）。
+
+✅ 注意：改 Kconfig 后必须同步 `sdkconfig` 与 `sdkconfig.defaults`，否则 menuconfig 与代码会各说各话。
+
+</details>
+
+<details>
+<summary><b>8. 用低版本 IDF 构建会静默改写 sdkconfig</b></summary>
+
+用 ESP-IDF 5.3.2 构建本工程（原本基于 5.5.1）时，IDF 会把 `sdkconfig` 头部版本号改掉，并重排约 400 行 SOC 配置项。提交前务必 `git diff sdkconfig` 确认，只保留你真正想改的那几行。
+
+</details>
+
+## 踩坑记录（配套视频脚本）
+
+`tts/` 目录下用于生成旁白的脚本，踩到的坑与固件无关，单独记录：
+
+<details>
+<summary><b>9. GPT-SoVITS：大写字母 + 连字符会让 G2P 崩溃</b></summary>
+
+文本里出现 `ESP-IDF` 这类 **连续大写 + 连字符 + 连续大写** 的 token 时，`GPT_SoVITS/text/english.py` 的 `qryword()` 会在 `phones.extend(self.cmu[w][0])` 抛 `KeyError: '-'`，请求响应中途断开，客户端表现为 `ChunkedEncodingError`。
+
+已二分验证的边界：
+
+| 输入 | 结果 |
+|------|------|
+| `ESP-IDF` / `ABC-DEF` / `IDF-ESP` | ❌ 崩溃 |
+| `esp-idf` / `ESP` / `IDF` / `set-target` / `ESP32-Control` | ✅ 正常 |
+
+✅ 解决方案：改写成 `ESP IDF`。`generate.py` 里加了 `precheck()`，合成前会拦下同类 token 并列出位置，避免跑完一半才发现。
+
+</details>
+
+<details>
+<summary><b>10. 权重版本不匹配：732 词表 vs 322 词表</b></summary>
+
+同一目录下的权重可能来自不同代模型。判据是 `text_embedding.weight` 的词表大小：
+
+| 权重 | 词表 | 结论 |
+|------|------|------|
+| `Firefly-e15.ckpt` + `Firefly_e16_s1872.pth` | 512 / 322 | ✅ 当前代码可用 |
+| `manbo-e10.ckpt` + `manbo_e8_s168.pth` | 732 | ❌ v1 时代产物，加载即 `size mismatch` |
+
+manbo 那对**彼此匹配**，但都不匹配当前 v2 代码库，只能换权重，不能靠改配置绕过。
 
 </details>
 

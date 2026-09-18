@@ -1,8 +1,9 @@
 /*
  * ESP32 Web Control Panel
  *
- * This example implements a web server that allows monitoring and controlling
- * GPIO pins, PWM outputs for servos, and LED status.
+ * A WiFi-provisioned web server that exposes REST APIs for controlling
+ * GPIO pins, up to 8 servos over LEDC PWM, and the onboard LED, plus a
+ * single-page control panel and a WiFi provisioning page served from ROM.
  */
 
 #include <stdio.h>
@@ -36,11 +37,11 @@ static const char *TAG = "ESP32_WEB_CONTROL";
 #define NVS_KEY_SSID  "ssid"
 #define NVS_KEY_PASS  "password"
 
-#define EXAMPLE_ESP_MAXIMUM_RETRY 5
+#define WEBCTRL_MAX_RETRY 5
 #define MAX_SCAN_RESULTS 20
 
 /* Onboard plain LED (active high) */
-#define LED_GPIO 2
+#define LED_GPIO CONFIG_WEBCTRL_LED_GPIO
 
 static char saved_ssid[64] = {0};
 static char saved_pass[64] = {0};
@@ -288,12 +289,10 @@ const char index_html[] = R"rawliteral(
 </html>
 )rawliteral";
 
-/* Initialize servo on specified GPIO */
-esp_err_t initialize_servo(int gpio_num, ledc_channel_t channel);
-
 /* Set servo angle (0-180 degrees) */
 esp_err_t set_servo_angle(int gpio_num, int angle);
 
+/* Initialize servo on specified GPIO */
 esp_err_t initialize_servo(int gpio_num, ledc_channel_t channel) {
     int slot = -1;
     for(int i = 0; i < MAX_SERVOS; i++) {
@@ -339,6 +338,7 @@ esp_err_t initialize_servo(int gpio_num, ledc_channel_t channel) {
     return ESP_OK;
 }
 
+/* Set servo angle (0-180 degrees) */
 esp_err_t set_servo_angle(int gpio_num, int angle) {
     if(angle < 0 || angle > 180) {
         ESP_LOGE(TAG, "Invalid angle: %d", angle);
@@ -1001,7 +1001,7 @@ static void event_handler(void* arg, esp_event_base_t event_base,
             esp_wifi_connect();
         }
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        if (s_retry_num < EXAMPLE_ESP_MAXIMUM_RETRY) {
+        if (s_retry_num < WEBCTRL_MAX_RETRY) {
             esp_wifi_connect();
             s_retry_num++;
             ESP_LOGI(TAG, "retry to connect to the AP");
